@@ -1,102 +1,146 @@
 import re
-from models import db, ScamIntelligence
 
 
 class ScamDetector:
 
-    def analyze_message(self, text, session):
-        text_lower = text.lower()
-
-        flags = []
-        risk = 0
-        extracted = {
-            "upiIds": set(),
-            "bankAccounts": set(),
-            "phoneNumbers": set(),
-            "phishingLinks": set(),
-            "suspiciousKeywords": set()
+    def __init__(self):
+        # Expanded suspicious keywords library
+        self.keywords = {
+            "urgent", "immediately", "blocked", "suspended", "kyc",
+            "verify", "pan card", "aadhaar", "aadhar", "lottery", "prize",
+            "winner", "expire", "expired", "unauthorized", "irs", "police",
+            "bank", "rbi", "customer care", "refund", "cashback",
+            "wallet", "otp", "pin", "cvv", "atm", "card",
+            "account", "payment", "transfer", "freeze", "frozen",
+            "legal action", "arrest", "warrant", "customs", "tax",
+            "confirm", "update", "link", "click", "reset password",
+            "secure", "verify now", "act now", "limited time"
         }
 
-        # --- Scam indicators [cite: 9] ---
-        scam_keywords = [
-            "won", "prize", "lottery", "urgent",
-            "account blocked", "verify now",
-            "kyc", "upi", "bank", "suspension", "suspend"
-        ]
+        # Improved Regex Patterns
+        # UPI: handle@bank format (more strict)
+        self.upi_pattern = r'\b[a-zA-Z0-9.\-_]{3,}@[a-zA-Z]{3,}\b'
 
-        for word in scam_keywords:
+        # Indian Phone: +91 or start with 6-9, 10 digits
+        self.phone_pattern = r'(?:\+91[\s\-]?)?[6-9]\d{9}\b'
+
+        # Bank Account: 9-18 digits (more strict boundaries)
+        self.bank_pattern = r'\b\d{9,18}\b'
+
+        # Links: HTTP/HTTPS with better capture
+        self.link_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+        
+        # Additional patterns for better detection
+        self.ifsc_pattern = r'\b[A-Z]{4}0[A-Z0-9]{6}\b'  # IFSC codes
+
+    def analyze_message(self, text, session, intelligence_record):
+        """
+        Analyzes text, updates the intelligence record, and calculates risk.
+        Returns a summary dict.
+        """
+        if not text:
+            return {"is_scam": False, "risk_score": 0, "flags": [], "extracted_data": {}}
+
+        text_lower = text.lower()
+        risk_score = 0
+        flags = []
+
+        # Extraction Phase
+        extracted = {
+            "suspiciousKeywords": set(),
+            "upiIds": set(re.findall(self.upi_pattern, text)),
+            "phoneNumbers": set(re.findall(self.phone_pattern, text)),
+            "bankAccounts": set(re.findall(self.bank_pattern, text)),
+            "phishingLinks": set(re.findall(self.link_pattern, text)),
+            "ifscCodes": set(re.findall(self.ifsc_pattern, text.upper()))
+        }
+
+        # Keyword Analysis - Multi-word phrases
+        keyword_matches = []
+        for word in self.keywords:
             if word in text_lower:
                 extracted["suspiciousKeywords"].add(word)
-                risk += 10
+                keyword_matches.append(word)
+                risk_score += 10
 
-        # --- Regex extraction [cite: 11] ---
-        extracted["upiIds"].update(
-            re.findall(r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}", text)
-        )
-        # Matches Indian mobile numbers and generic 10-digit numbers
-        extracted["phoneNumbers"].update(
-            re.findall(r"\+91[\-\s]?\d{10}|\b\d{10}\b", text)
-        )
-        extracted["phishingLinks"].update(
-            re.findall(r"https?://\S+", text)
-        )
-        # Matches 9-18 digit numbers (potential bank accounts)
-        extracted["bankAccounts"].update(
-            re.findall(r"\b\d{9,18}\b", text)
-        )
+        # High-risk keyword combinations
+        urgency_words = {"urgent", "immediately", "now", "quickly", "hurry"}
+        threat_words = {"blocked", "suspended", "frozen", "arrest", "legal action"}
+        verify_words = {"verify", "confirm", "update", "click", "link"}
+        
+        has_urgency = any(w in text_lower for w in urgency_words)
+        has_threat = any(w in text_lower for w in threat_words)
+        has_verify = any(w in text_lower for w in verify_words)
+        
+        # Combination scoring
+        if has_urgency and has_threat:
+            risk_score += 20
+            flags.append("urgency_with_threat")
+        
+        if has_verify and has_threat:
+            risk_score += 15
+            flags.append("verify_with_threat")
 
-        # --- Risk escalation ---
-        if extracted["upiIds"] or extracted["bankAccounts"]:
+        # Payment Request Detection
+        if extracted["upiIds"] or extracted["bankAccounts"] or extracted["ifscCodes"]:
+            risk_score += 30
             flags.append("payment_request")
-            risk += 30
 
+        # Phishing Link Detection
         if extracted["phishingLinks"]:
+            risk_score += 40
             flags.append("phishing_link")
-            risk += 40
+            
+            # Extra points if link + urgency
+            if has_urgency:
+                risk_score += 10
 
-        # If keyword + link/number/upi, almost certainly a scam
-        if extracted["suspiciousKeywords"] and (extracted["phishingLinks"] or extracted["upiIds"]):
-            risk += 20
+        # Contact Sharing
+        if extracted["phoneNumbers"]:
+            risk_score += 10
+            flags.append("contact_sharing")
 
-        is_scam = risk >= 40  # Lowered threshold slightly to be more sensitive
+        # Heuristic: Multiple indicators = high confidence scam
+        indicator_count = sum([
+            bool(extracted["upiIds"]),
+            bool(extracted["bankAccounts"]),
+            bool(extracted["phishingLinks"]),
+            bool(keyword_matches),
+            has_urgency,
+            has_threat
+        ])
+        
+        if indicator_count >= 3:
+            risk_score += 20
+            flags.append("multiple_indicators")
 
-        if is_scam:
-            session.scam_detected = True
+        # Threshold for scam detection
+        is_scam = risk_score >= 40
 
-        # --- Persist intelligence ---
-        self._save_intelligence(session.id, extracted)
+        # Persistence Phase (Side-effect)
+        self._save_intelligence(intelligence_record, extracted)
 
         return {
             "is_scam": is_scam,
-            "risk_score": risk,
+            "risk_score": risk_score,
             "flags": flags,
-            "extracted_data": {
-                k: list(v) for k, v in extracted.items()
-            }
+            "extracted_data": extracted
         }
 
-    def _save_intelligence(self, session_id, data):
-        # Find existing or create new
-        intel = ScamIntelligence.query.filter_by(session_id=session_id).first()
+    def _save_intelligence(self, record, extracted_data):
+        """Helper to append unique items to the DB record without duplication."""
+        record.upi_ids = self._merge(record.upi_ids, extracted_data["upiIds"])
+        record.bank_accounts = self._merge(record.bank_accounts, extracted_data["bankAccounts"])
+        record.phone_numbers = self._merge(record.phone_numbers, extracted_data["phoneNumbers"])
+        record.phishing_links = self._merge(record.phishing_links, extracted_data["phishingLinks"])
+        record.suspicious_keywords = self._merge(record.suspicious_keywords, extracted_data["suspiciousKeywords"])
 
-        if not intel:
-            intel = ScamIntelligence(session_id=session_id)
-            db.session.add(intel)
+    def _merge(self, current_str, new_set):
+        """Merges a CSV string with a new set of items, returning unique CSV."""
+        if not current_str:
+            current_items = set()
+        else:
+            current_items = set(x.strip() for x in current_str.split(',') if x.strip())
 
-        # Merge incrementally
-        intel.upi_ids = self._merge(intel.upi_ids, data["upiIds"])
-        intel.bank_accounts = self._merge(intel.bank_accounts, data["bankAccounts"])
-        intel.phone_numbers = self._merge(intel.phone_numbers, data["phoneNumbers"])
-        intel.phishing_links = self._merge(intel.phishing_links, data["phishingLinks"])
-        intel.suspicious_keywords = self._merge(intel.suspicious_keywords, data["suspiciousKeywords"])
-
-        db.session.commit()
-
-    def _merge(self, existing, new_set):
-        if not new_set:
-            return existing or ""
-        existing_set = set(existing.split(",")) if existing else set()
-        # Filter out empty strings
-        existing_set = {x for x in existing_set if x}
-        combined = existing_set.union(new_set)
-        return ",".join(combined)
+        merged = current_items.union(new_set)
+        return ",".join(sorted(merged))  # Sorted for consistency
