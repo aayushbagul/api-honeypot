@@ -165,11 +165,13 @@ def chat():
     try:
         session.add_message("scammer", user_text)
 
+        # Find this section around line 160 in your app.py
         detector = ScamDetector()
         analysis_result = detector.analyze_message(user_text, session, intelligence)
 
+        # FIX: Only update to True, never reset to False
         if analysis_result['is_scam']:
-            session.scam_detected = True
+            session.scam_detected = True #
 
         # 5. Agent Response Generation
         agent = HoneypotAgent(max_turns=8)
