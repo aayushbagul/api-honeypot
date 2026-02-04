@@ -238,19 +238,19 @@ def send_guvi_callback(session, intelligence, analysis_result):
         tactics = ", ".join(analysis_result.get('flags', []))
         notes = f"Honeypot engagement concluded. Threat detected. Tactics identified: {tactics or 'None'}."
 
-        payload = {
-            "session-id": session.id,
-            "scam detected": session.scam_detected,
-            "total messages exchanged": session.turn_count,
-            "extracted intelligence": {
-                "bank account": to_list(intelligence.bank_accounts),
-                "upiid": to_list(intelligence.upi_ids),
-                "phishing links": to_list(intelligence.phishing_links),
-                "phone numbers": to_list(intelligence.phone_numbers),
-                "suspicious keywords": to_list(intelligence.suspicious_keywords)
-            },
-            "agent notes": notes
-        }
+   payload = {
+    "sessionId": session.id,
+    "scamDetected": session.scam_detected,
+    "totalMessagesExchanged": session.turn_count,
+    "extractedIntelligence": {
+        "bank account": to_list(intelligence.bank_accounts),
+        "upiid": to_list(intelligence.upi_ids),
+        "phishing links": to_list(intelligence.phishing_links),
+        "phone numbers": to_list(intelligence.phone_numbers),
+        "suspicious keywords": to_list(intelligence.suspicious_keywords)
+    },
+    "agentNotes": notes
+}
 
         logger.info(f"Sending callback to {CALLBACK_URL}")
         logger.info(f"Payload: {payload}")
