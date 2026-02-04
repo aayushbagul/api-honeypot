@@ -170,8 +170,12 @@ def chat():
         analysis_result = detector.analyze_message(user_text, session, intelligence)
 
         # FIX: Only update to True, never reset to False
+        # Force the session to stay True if it was ever flagged
         if analysis_result['is_scam']:
-            session.scam_detected = True #
+            session.scam_detected = True
+        elif session.scam_detected:
+        # Ensure the current analysis result reflects the session's known status
+            analysis_result['is_scam'] = True#
 
         # 5. Agent Response Generation
         agent = HoneypotAgent(max_turns=8)
