@@ -117,14 +117,15 @@ class ScamDetector:
         # Threshold for scam detection
          # In detector.py, inside analyze_message
         # Change the threshold or add a 'Force True' for intelligence gathered
+        # Ensure this block is aligned with the 'if indicator_count' block above it
         is_scam = (
-            risk_score >= 30 or  # Lowered from 40
+            risk_score >= 30 or 
             bool(extracted["upiIds"]) or 
             bool(extracted["bankAccounts"]) or 
             bool(extracted["phishingLinks"])
-        )
+        ) #
 
-        # Persistence Phase (Side-effect)
+        # Persistence Phase
         self._save_intelligence(intelligence_record, extracted)
 
         return {
@@ -132,7 +133,7 @@ class ScamDetector:
             "risk_score": risk_score,
             "flags": flags,
             "extracted_data": extracted
-        }
+        } #
 
     def _save_intelligence(self, record, extracted_data):
         """Helper to append unique items to the DB record without duplication."""
