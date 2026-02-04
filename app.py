@@ -1,136 +1,262 @@
-from flask import Flask, request, jsonify
-from datetime import datetime
+import os
 import uuid
+import logging
+from flask import Flask, request, jsonify, make_response
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
 import requests
-import json
 
-# Import our fixed modules
+# Import internal modules
 from models import db, ScamSession, ScamIntelligence
 from detector import ScamDetector
 from agent import HoneypotAgent
 
+# Configuration
 app = Flask(__name__)
-
-# --- Configuration ---
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///honeypot_intelligence.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default_secret_key')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'honeypot_intelligence.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = "hackathon_secret"
 
-# Initialize DB with App
+# Initialize extensions
 db.init_app(app)
 
-# Initialize Logic Classes
-detector = ScamDetector()
-agent = HoneypotAgent()
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Create tables on startup
-with app.app_context():
-    db.create_all()
+# Constants
+CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+API_KEYS = {"MlYp-BYmcd7ebj1ospIEI387BJuIRmJYBOLyeIkj8NI"}
 
 
-# --- Helper: Mandatory Callback to GUVI  ---
-def send_guvi_callback(session, intel):
+def check_auth(headers):
+    """Validate API Key from headers (Case Insensitive)."""
+    key = headers.get('x-api-key') or headers.get('X-API-KEY')
+    return key in API_KEYS
+
+
+def parse_input(data):
     """
-    Sends the final report to the hackathon evaluation endpoint.
-    """
-    url = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
-
-    # Helper to convert comma-string to list
-    def to_list(s):
-        return s.split(",") if s else []
-
-    payload = {
-        "sessionId": session.id,
-        "scamDetected": session.scam_detected,
-        "totalMessagesExchanged": session.turn_count,
-        "extractedIntelligence": {
-            "bankAccounts": to_list(intel.bank_accounts),
-            "upilds": to_list(intel.upi_ids),  # Note: PDF typo 'upilds' handled here? keeping standard camelCase
-            "upiIds": to_list(intel.upi_ids),  # sending both to be safe
-            "phishingLinks": to_list(intel.phishing_links),
-            "phoneNumbers": to_list(intel.phone_numbers),
-            "suspiciousKeywords": to_list(intel.suspicious_keywords)
-        },
-        "agentNotes": "Automated Honeypot engagement completed."
+    Parse input according to Tasks.md specification.
+    Expected structure:
+    {
+        "message": {
+            "sender": "scammer",
+            "txt_message": "text here",
+            "timestamp": "..."
+        }
     }
+    """
+    text = None
+    
+    # Priority 1: Tasks.md specified format - message.txt_message
+    if 'message' in data and isinstance(data['message'], dict):
+        text = data['message'].get('txt_message')
+        if not text:  # Fallback to 'text' within message
+            text = data['message'].get('text')
+    
+    # Priority 2: Flat format fallbacks
+    if not text:
+        text = data.get('txt_message')
+    if not text:
+        text = data.get('text')
+    
+    return text
 
-    try:
-        # We wrap in try/except so our API doesn't crash if their server is down
-        print(f"Sending Callback for Session {session.id}...")
-        response = requests.post(url, json=payload, timeout=5)
-        print(f"Callback Response: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"Callback failed: {str(e)}")
+
+@app.errorhandler(400)
+def bad_request(error):
+    return make_response(jsonify({'status': 'error', 'message': 'Bad Request: Invalid input format'}), 400)
 
 
-# --- API Endpoint [cite: 13] ---
-@app.route('/chat', methods=['POST'])
-def chat():
-    # 1. Security Check [cite: 19]
-    api_key = request.headers.get('x-api-key') or request.headers.get('X-API-KEY')
-    # Allowing "your_secret_hackathon_key" OR the example in doc
-    if api_key not in ["your_secret_hackathon_key", "YOUR_SECRET_API_KEY"]:
-        return jsonify({"error": "Unauthorized"}), 401
+@app.errorhandler(401)
+def unauthorized(error):
+    return make_response(jsonify({'status': 'error', 'message': 'Unauthorized: Invalid API Key'}), 401)
 
-    data = request.get_json()
 
-    # 2. Parse Input according to PDF Section 6.1/6.2 [cite: 32, 48]
-    # Structure: { "sessionId": "...", "message": { "text": "...", "sender": "..." } }
-    session_id = data.get('sessionId')
-    if not session_id:
-        session_id = str(uuid.uuid4())  # Fallback if not provided
+@app.errorhandler(500)
+def internal_error(error):
+    return make_response(jsonify({'status': 'error', 'message': 'Internal Server Error'}), 500)
 
-    message_data = data.get('message', {})
-    user_text = message_data.get('text')
-
-    # Fallback if user sends flat JSON (common mistake)
-    if not user_text and 'text' in data:
-        user_text = data['text']
-
-    if not user_text:
-        return jsonify({"error": "No message text provided"}), 400
-
-    # 3. Retrieve or Create Session
-    session = ScamSession.query.filter_by(id=session_id).first()
-    if not session:
-        session = ScamSession(id=session_id)
-        db.session.add(session)
-        # Create empty intelligence record
-        intel = ScamIntelligence(session_id=session_id)
-        db.session.add(intel)
-        db.session.commit()
-
-    # 4. Log User Message
-    session.add_message("scammer", user_text)
-
-    # 5. Analyze Message (Detector) [cite: 14]
-    detection_result = detector.analyze_message(user_text, session)
-
-    # 6. Generate Agent Response (Agent) [cite: 15]
-    session.turn_count += 1
-    agent_result = agent.generate_reply(session, user_text, detection_result)
-
-    reply_text = agent_result['reply']
-    session.add_message("agent", reply_text)
-    db.session.commit()
-
-    # 7. Check for Conversation End & Trigger Callback [cite: 121]
-    # We trigger if the agent decides to end, OR if we have high risk and high turn count
-    if agent_result.get('end_conversation') or (session.turn_count > 6 and session.scam_detected):
-        intel = ScamIntelligence.query.filter_by(session_id=session.id).first()
-        send_guvi_callback(session, intel)
-
-    # 8. Return Response [cite: 102]
-    return jsonify({
-        "status": "success",
-        "reply": reply_text,
-        "sessionId": session_id,
-        "scamDetected": session.scam_detected
-    })
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Honeypot Active. Send POST requests to /chat"
+    return jsonify({
+        "status": "online",
+        "message": "Honeypot Active. POST to /chat to engage."
+    })
+
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    # 1. Security Check
+    if not check_auth(request.headers):
+        return jsonify({"status": "error", "reply": "Invalid or missing API Key"}), 401
+
+    # 2. Parse Payload
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return jsonify({"status": "error", "reply": "Invalid JSON payload"}), 400
+    except Exception:
+        return jsonify({"status": "error", "reply": "Malformed JSON"}), 400
+
+    # Extract Core Data
+    session_id = data.get('sessionId') or data.get('session_id')
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    user_text = parse_input(data)
+    if not user_text:
+        return jsonify({"status": "error", "reply": "No message text provided"}), 400
+
+    # Extract Metadata and History
+    meta_data = data.get('meta_data', {})
+    conversation_history = data.get('conversation_history', [])
+
+    # 3. Session Management
+    session = None
+    try:
+        session = ScamSession.query.filter_by(id=session_id).first()
+    except Exception as e:
+        logger.warning(f"DB Read Error: {e}")
+
+    if not session:
+        session = ScamSession(id=session_id)
+        
+        # Import conversation history if provided
+        if conversation_history:
+            for hist_msg in conversation_history:
+                if isinstance(hist_msg, dict):
+                    sender = hist_msg.get('sender', 'unknown')
+                    text = hist_msg.get('txt_message') or hist_msg.get('text', '')
+                    if text:
+                        session.add_message(sender, text)
+        
+        db.session.add(session)
+        intelligence = ScamIntelligence(session_id=session_id)
+        db.session.add(intelligence)
+
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"DB Commit Failed: {e}")
+    else:
+        intelligence = session.intelligence
+
+    # 4. Message Logging & Analysis
+    try:
+        session.add_message("scammer", user_text)
+
+        detector = ScamDetector()
+        analysis_result = detector.analyze_message(user_text, session, intelligence)
+
+        if analysis_result['is_scam']:
+            session.scam_detected = True
+
+        # 5. Agent Response Generation
+        agent = HoneypotAgent(max_turns=8)
+
+        # Pass intelligence context
+        current_intelligence_context = {
+            'has_bank': bool(intelligence.bank_accounts),
+            'has_upi': bool(intelligence.upi_ids),
+            'has_phone': bool(intelligence.phone_numbers),
+            'has_link': bool(intelligence.phishing_links)
+        }
+
+        reply_data = agent.generate_reply(
+            session,
+            user_text,
+            meta_data=meta_data,
+            intelligence_context=current_intelligence_context
+        )
+
+        agent_reply = reply_data['reply']
+        session.add_message("agent", agent_reply)
+        session.turn_count += 1
+
+        # Commit state updates
+        db.session.commit()
+
+        # 6. Callback Logic - Send only when:
+        # - Scam detected AND
+        # - Sufficient engagement (6+ turns) AND
+        # - Intelligence extracted (has at least one piece of intel)
+        has_intelligence = (
+            bool(intelligence.bank_accounts) or 
+            bool(intelligence.upi_ids) or 
+            bool(intelligence.phone_numbers) or
+            bool(intelligence.phishing_links)
+        )
+        
+        should_report = (
+            session.scam_detected and 
+            session.turn_count >= 6 and 
+            has_intelligence
+        ) or reply_data['end_conversation']
+
+        if should_report:
+            send_guvi_callback(session, intelligence, analysis_result)
+
+        # 7. Final Response - ONLY status and reply as per Tasks.md
+        return jsonify({
+            "status": "success",
+            "reply": agent_reply
+        })
+
+    except Exception as e:
+        logger.error(f"Processing Error: {e}")
+        return jsonify({"status": "error", "reply": str(e)}), 500
+
+
+def to_list(csv_str):
+    """Helper to convert CSV string to list, filtering empties."""
+    if not csv_str:
+        return []
+    return [item.strip() for item in csv_str.split(',') if item.strip()]
+
+
+def send_guvi_callback(session, intelligence, analysis_result):
+    """
+    Sends final report to evaluation endpoint.
+    Uses EXACT field names from Tasks.md (with spaces/hyphens).
+    """
+    try:
+        tactics = ", ".join(analysis_result.get('flags', []))
+        notes = f"Honeypot engagement concluded. Threat detected. Tactics identified: {tactics or 'None'}."
+
+        # CRITICAL: Use exact field names from Tasks.md
+        payload = {
+            "session-id": session.id,  # hyphen, not camelCase
+            "scam detected": session.scam_detected,  # space, not camelCase
+            "total messages exchanged": session.turn_count,  # spaces
+            "extracted intelligence": {  # spaces
+                "bank account": to_list(intelligence.bank_accounts),  # space, singular
+                "upiid": to_list(intelligence.upi_ids),  # no space, lowercase
+                "phishing links": to_list(intelligence.phishing_links),  # space
+                "phone numbers": to_list(intelligence.phone_numbers),  # space
+                "suspicious keywords": to_list(intelligence.suspicious_keywords)  # space
+            },
+            "agent notes": notes  # space
+        }
+
+        response = requests.post(CALLBACK_URL, json=payload, timeout=5)
+        logger.info(f"Callback sent. Status: {response.status_code}, Response: {response.text}")
+
+    except requests.exceptions.Timeout:
+        logger.error("Callback timed out after 5 seconds.")
+    except Exception as e:
+        logger.error(f"Failed to send callback: {e}")
+
+
+# Database Creation Hook
+with app.app_context():
+    try:
+        db.create_all()
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
