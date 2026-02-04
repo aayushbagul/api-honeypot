@@ -28,11 +28,7 @@ logger = logging.getLogger(__name__)
 CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
 # IMPORTANT: Replace with your actual API key
-API_KEYS = {
-    os.environ.get('MlYp-BYmcd7ebj1ospIEI387BJuIRmJYBOLyeIkj8NI', 'your_secret_hackathon_key'),
-    "your_secret_hackathon_key",  # Fallback for testing
-    "test_key"  # For local testing
-}
+API_KEYS = {MlYp-BYmcd7ebj1ospIEI387BJuIRmJYBOLyeIkj8NI}
 
 
 def check_auth(headers):
