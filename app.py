@@ -24,35 +24,34 @@ db.init_app(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
+# CONFIGURATION
 CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
-API_KEYS = {"MlYp-BYmcd7ebj1ospIEI387BJuIRmJYBOLyeIkj8NI"}
+
+# IMPORTANT: Replace with your actual API key
+API_KEYS = {
+    os.environ.get('MlYp-BYmcd7ebj1ospIEI387BJuIRmJYBOLyeIkj8NI', 'your_secret_hackathon_key'),
+    "your_secret_hackathon_key",  # Fallback for testing
+    "test_key"  # For local testing
+}
 
 
 def check_auth(headers):
     """Validate API Key from headers (Case Insensitive)."""
     key = headers.get('x-api-key') or headers.get('X-API-KEY')
-    return key in API_KEYS
+    if key not in API_KEYS:
+        logger.warning(f"Unauthorized access attempt with key: {key}")
+        return False
+    return True
 
 
 def parse_input(data):
-    """
-    Parse input according to Tasks.md specification.
-    Expected structure:
-    {
-        "message": {
-            "sender": "scammer",
-            "txt_message": "text here",
-            "timestamp": "..."
-        }
-    }
-    """
+    """Parse input according to Tasks.md specification."""
     text = None
     
     # Priority 1: Tasks.md specified format - message.txt_message
     if 'message' in data and isinstance(data['message'], dict):
         text = data['message'].get('txt_message')
-        if not text:  # Fallback to 'text' within message
+        if not text:
             text = data['message'].get('text')
     
     # Priority 2: Flat format fallbacks
@@ -81,24 +80,42 @@ def internal_error(error):
 
 @app.route('/', methods=['GET'])
 def home():
+    """Health check endpoint"""
     return jsonify({
         "status": "online",
-        "message": "Honeypot Active. POST to /chat to engage."
+        "message": "Honeypot Active. POST to /chat to engage.",
+        "endpoints": {
+            "chat": "/chat",
+            "health": "/"
+        }
     })
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Additional health check"""
+    return jsonify({"status": "healthy", "service": "honeypot"})
 
 
 @app.route('/chat', methods=['POST'])
 def chat():
+    """Main chat endpoint for honeypot interaction."""
+    
+    logger.info("Received request to /chat")
+    
     # 1. Security Check
     if not check_auth(request.headers):
+        logger.warning("Authentication failed")
         return jsonify({"status": "error", "reply": "Invalid or missing API Key"}), 401
 
     # 2. Parse Payload
     try:
         data = request.get_json(force=True, silent=True)
         if data is None:
+            logger.error("Invalid JSON payload")
             return jsonify({"status": "error", "reply": "Invalid JSON payload"}), 400
-    except Exception:
+    except Exception as e:
+        logger.error(f"JSON parsing error: {e}")
         return jsonify({"status": "error", "reply": "Malformed JSON"}), 400
 
     # Extract Core Data
@@ -108,7 +125,10 @@ def chat():
 
     user_text = parse_input(data)
     if not user_text:
+        logger.error("No message text in payload")
         return jsonify({"status": "error", "reply": "No message text provided"}), 400
+
+    logger.info(f"Processing message for session {session_id}: {user_text[:50]}...")
 
     # Extract Metadata and History
     meta_data = data.get('meta_data', {})
@@ -180,10 +200,7 @@ def chat():
         # Commit state updates
         db.session.commit()
 
-        # 6. Callback Logic - Send only when:
-        # - Scam detected AND
-        # - Sufficient engagement (6+ turns) AND
-        # - Intelligence extracted (has at least one piece of intel)
+        # 6. Callback Logic
         has_intelligence = (
             bool(intelligence.bank_accounts) or 
             bool(intelligence.upi_ids) or 
@@ -200,14 +217,15 @@ def chat():
         if should_report:
             send_guvi_callback(session, intelligence, analysis_result)
 
-        # 7. Final Response - ONLY status and reply as per Tasks.md
+        # 7. Final Response
+        logger.info(f"Sending reply for session {session_id}")
         return jsonify({
             "status": "success",
             "reply": agent_reply
         })
 
     except Exception as e:
-        logger.error(f"Processing Error: {e}")
+        logger.error(f"Processing Error: {e}", exc_info=True)
         return jsonify({"status": "error", "reply": str(e)}), 500
 
 
@@ -219,29 +237,28 @@ def to_list(csv_str):
 
 
 def send_guvi_callback(session, intelligence, analysis_result):
-    """
-    Sends final report to evaluation endpoint.
-    Uses EXACT field names from Tasks.md (with spaces/hyphens).
-    """
+    """Sends final report to GUVI evaluation endpoint."""
     try:
         tactics = ", ".join(analysis_result.get('flags', []))
         notes = f"Honeypot engagement concluded. Threat detected. Tactics identified: {tactics or 'None'}."
 
-        # CRITICAL: Use exact field names from Tasks.md
         payload = {
-            "session-id": session.id,  # hyphen, not camelCase
-            "scam detected": session.scam_detected,  # space, not camelCase
-            "total messages exchanged": session.turn_count,  # spaces
-            "extracted intelligence": {  # spaces
-                "bank account": to_list(intelligence.bank_accounts),  # space, singular
-                "upiid": to_list(intelligence.upi_ids),  # no space, lowercase
-                "phishing links": to_list(intelligence.phishing_links),  # space
-                "phone numbers": to_list(intelligence.phone_numbers),  # space
-                "suspicious keywords": to_list(intelligence.suspicious_keywords)  # space
+            "session-id": session.id,
+            "scam detected": session.scam_detected,
+            "total messages exchanged": session.turn_count,
+            "extracted intelligence": {
+                "bank account": to_list(intelligence.bank_accounts),
+                "upiid": to_list(intelligence.upi_ids),
+                "phishing links": to_list(intelligence.phishing_links),
+                "phone numbers": to_list(intelligence.phone_numbers),
+                "suspicious keywords": to_list(intelligence.suspicious_keywords)
             },
-            "agent notes": notes  # space
+            "agent notes": notes
         }
 
+        logger.info(f"Sending callback to {CALLBACK_URL}")
+        logger.info(f"Payload: {payload}")
+        
         response = requests.post(CALLBACK_URL, json=payload, timeout=5)
         logger.info(f"Callback sent. Status: {response.status_code}, Response: {response.text}")
 
@@ -255,8 +272,21 @@ def send_guvi_callback(session, intelligence, analysis_result):
 with app.app_context():
     try:
         db.create_all()
+        logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Get port from environment variable (Render uses PORT env var)
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Check if API keys have been updated
+    if "your_secret_hackathon_key" in API_KEYS and os.environ.get('HACKATHON_API_KEY') is None:
+        logger.warning("="*60)
+        logger.warning("WARNING: Using default API keys!")
+        logger.warning("Set HACKATHON_API_KEY environment variable")
+        logger.warning("="*60)
+    
+    # Render requires host='0.0.0.0' to accept external connections
+    app.run(host='0.0.0.0', port=port, debug=False)
+
