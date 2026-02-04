@@ -4,7 +4,6 @@ from datetime import datetime
 # Initialize the database instance here to be shared
 db = SQLAlchemy()
 
-
 class ScamSession(db.Model):
     __tablename__ = "scam_sessions"
 
