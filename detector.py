@@ -115,7 +115,14 @@ class ScamDetector:
             flags.append("multiple_indicators")
 
         # Threshold for scam detection
-        is_scam = risk_score >= 40
+         # In detector.py, inside analyze_message
+        # Change the threshold or add a 'Force True' for intelligence gathered
+            is_scam = (
+            risk_score >= 30 or  # Lowered from 40
+            bool(extracted["upiIds"]) or 
+            bool(extracted["bankAccounts"]) or 
+            bool(extracted["phishingLinks"])
+            )
 
         # Persistence Phase (Side-effect)
         self._save_intelligence(intelligence_record, extracted)
