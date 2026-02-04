@@ -120,6 +120,7 @@ class ScamDetector:
         # Ensure this block is aligned with the 'if indicator_count' block above it
         is_scam = (
             risk_score >= 30 or 
+            indicator_count >= 2 or  # Trigger if multiple types of flags are raised
             bool(extracted["upiIds"]) or 
             bool(extracted["bankAccounts"]) or 
             bool(extracted["phishingLinks"])
