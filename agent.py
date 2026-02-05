@@ -1,59 +1,149 @@
 import random
+import re
 
 
 class HoneypotAgent:
     """
-    Maintains the persona and handles turn-taking logic.
-    Acts as a panicked victim from the very first message.
+    Maintains the persona of a panicked victim.
+    Refined for infinite looping and robust context detection.
     """
 
-    def __init__(self, max_turns=8):
-        self.max_turns = max_turns
+    def __init__(self, max_turns=None, narrative_limit=6):
+        # We accept 'max_turns' to prevent crashes from legacy app.py calls,
+        # but we don't use it for termination anymore.
+        # 'narrative_limit' defines when we switch from Story Mode to Infinite Loop Mode.
+        self.narrative_limit = narrative_limit
 
-        # Removed "neutral" responses - honeypot should NEVER sound suspicious
+        # 1. CONTEXTUAL TRIGGERS
+        # Using compiled regex for better performance and reliability
+        self.triggers = {
+            "deflect_otp": re.compile(r"(otp|code|pin|password|verif)", re.IGNORECASE),
+            "tech_issue": re.compile(r"(link|url|click|website|app|download|apk|form)", re.IGNORECASE),
+            "panic_response": re.compile(r"(police|jail|arrest|court|legal|fbi|cbi|rbi|warrant|case)", re.IGNORECASE),
+            "financial_worry": re.compile(r"(account|bank|statement|balance|money|fund)", re.IGNORECASE),
+            "stalling_pressure": re.compile(r"(hurry|fast|quick|immediately|now|urgent|asap)", re.IGNORECASE),
+            "feign_compliance": re.compile(r"(details|info|send|share|disconnect|answer|reply|do it)", re.IGNORECASE),
+            "confusion": re.compile(r"(why|who|what|how|reason|purpose)", re.IGNORECASE)
+        }
+
+        # 2. SCRIPT DATABASE
+        # EXPANDED: Added ~30 new sentences to prevent repetition in the infinite loop.
         self.scripts = {
+            # --- STORYLINE SCRIPTS (Early Conversation) ---
             "opening": [
-                "Oh my god, really? I didn't do anything wrong. What should I do?",
+                "Oh my god, really? I didn't do anything wrong. What is happening?",
                 "Wait, is this serious? I just got this number. I'm panicked.",
-                "Oh no! I haven't done anything illegal. Why is this happening?",
-                "This is terrifying. Please tell me this is a mistake.",
-                "What?! I'm so scared. Please help me understand what's going on."
+                "Who is this? I haven't done anything illegal. Why are you messaging me?",
+                "This is terrifying. Please tell me this is a mistake."
             ],
             "probe": [
                 "I am so scared. Will I lose my money? Please help me fix this.",
                 "Is my bank balance safe? I can't afford to have it blocked.",
-                "I am really worried about my savings. What exactly do I need to do?",
-                "This sounds urgent. I don't want any legal trouble. Please help.",
-                "My hands are shaking. What did I do wrong? Can you fix this for me?"
+                "I don't want any trouble with the police. What exactly do I need to do?",
             ],
             "bait": [
-                "Okay, I will do whatever you say. I just want my account safe.",
-                "I understand. Please guide me, I trust you to fix this.",
-                "Okay, tell me the steps. I want to resolve this immediately.",
-                "I am ready to verify. Just tell me what information you need.",
-                "Yes yes, I'll cooperate fully. Just please don't block my account."
+                "Okay, I trust you. I just want this resolved.",
+                "I will do whatever you say to fix this. Please guide me.",
+                "Okay, tell me the steps. I don't want my account frozen.",
+                "I am a law-abiding citizen, please believe me.",
+                "I don't want to lose my savings. I'll listen to you.",
+                "Please stay on the line, I need your help to fix this."
             ],
             "extract": [
-                "I am trying to send the money but the app is asking for details. Can I send it to a bank account or UPI directly? Please share the details.",
-                "My app is glitching. Do you have a direct UPI ID or account number I can transfer to instead?",
-                "It says 'Server Error'. Is there a specific bank account number I should use for the verification fee?",
-                "The payment link isn't opening. Can you just give me your UPI ID? I'll send it from my other app.",
-                "Where should I send the payment? Give me your account details or UPI ID and I'll transfer right now.",
-                "Should I send it to your bank account? What's the account number? Or do you prefer UPI?"
+                "I'm trying to send the fee, but the app says 'Server Error'. Do you have a direct Bank Account number or UPI ID instead?",
+                "The link isn't loading. Can I just transfer directly to your account? What is the account number?",
+                "My payment app is glitching. If you give me your UPI ID, I can try sending it from my wife's phone.",
+                "It's asking for beneficiary details. Can you share your Account Number and IFSC?"
             ],
+            # MASSIVELY EXPANDED STALL LIST
             "stall": [
-                "Hold on, my internet is slow. Just writing it down now...",
-                "One second, the app is loading... it's just spinning.",
-                "Wait, I need to find my reading glasses to read the card number. Just a moment.",
-                "Hang on, my battery is low, let me plug in the charger quickly.",
-                "Sorry, my wife is calling me. Give me 30 seconds...",
-                "The screen went black, restarting my phone. Don't disconnect please."
+                "Hold on, my internet is very slow... it's buffering.",
+                "One second, let me find my reading glasses, I can't see the screen clearly.",
+                "Sorry, my battery is 1%, let me run and get a charger. Don't hang up.",
+                "My screen froze. I'm restarting the phone. Please wait 1 minute.",
+                "My hands are shaking so much, I keeps typing the wrong digits. Give me a moment.",
+                "The app just crashed. I am reopening it. Please stay online.",
+                "My wife is calling on the other line, let me reject it quickly.",
+                "The circle is just spinning round and round. Is the server down?",
+                "I dropped my phone in my panic, the screen is cracked. Hard to read.",
+                "Wait, someone is ringing the doorbell. It might be the postman. One second.",
+                "My glasses are foggy, I'm wiping them so I can read the card number.",
+                "The keypad is stuck on the screen. It won't let me type.",
+                "It says 'Please update application' before I can proceed. Updating now...",
+                "I can't find the 'send' button. Is it at the top or bottom?",
+                "My son is asking me something, let me just tell him to go away.",
+                "The wifi just disconnected. Let me switch to mobile data.",
+                "It's asking for a fingerprint now, but my finger is wet.",
+                "I typed the number wrong again, deleting it... sorry, I'm nervous.",
+                "Wait, I left my card in the other room. Running to get it.",
+                "The screen went dim, I'm trying to brighten it.",
+                "Wait, I clicked the wrong thing. Going back to the main menu.",
+                "It says 'Loading secure gateway', still spinning...",
+                "My fingers are too big for these tiny buttons, I keep hitting space.",
+                "The app closed itself again. Why is this happening?",
+                "I'm entering the numbers... 4... 5... wait, was it 5 or 6?",
+                "It's asking me to rotate the phone for security view.",
+                "Hold on, a WhatsApp notification covered the button.",
+                "I'm shivering, sorry, typing is very slow right now.",
+                "Just a moment, I am finding a pen to write down what you said.",
+                "The page is completely white. Is it supposed to be white?"
             ],
+
+            # --- CONTEXT REACTION SCRIPTS ---
+            "deflect_otp": [
+                "I didn't get any code yet. Should I wait?",
+                "My messages aren't coming through. Signal is weak here.",
+                "It says 'Do not share this code'. Is it safe to give it to you?",
+                "Wait, a message just flashed but disappeared. Send it again?",
+                "I got a code for a food delivery app, is that the one?",
+                "My inbox is full, let me delete some old messages to receive it."
+            ],
+            "tech_issue": [
+                "I clicked it but it says 'Site cannot be reached'.",
+                "The link is not opening. Is there another way?",
+                "I don't know how to download that. I am not very good with technology.",
+                "It says 'File Corrupted'. Can we do this without downloading the app?",
+                "My browser says 'Connection Not Private'. Should I be worried?",
+                "It's downloading something but it's stuck at 0%.",
+                "Do I click 'Allow' or 'Block'? It's asking for permission."
+            ],
+            "panic_response": [
+                "Please don't involve the police! I am a respectable citizen.",
+                "I am literally crying right now. Please help me stop the warrant.",
+                "I cannot go to jail. I have children. Please help me."
+            ],
+            "financial_worry": [
+                "I have my life savings in there. Is it safe?",
+                "If I do this, will my account be unblocked immediately?",
+                "I just want to secure my money. Please tell me it's safe."
+            ],
+            "stalling_pressure": [
+                "I am trying! Please don't yell at me, I'm nervous.",
+                "I'm going as fast as I can, but my phone is very old.",
+                "Please be patient, I am doing exactly what you said."
+            ],
+            "feign_compliance": [
+                "Yes, yes, I am doing it right now. Just a moment.",
+                "Okay, I am looking for it now.",
+                "I am listening, please don't disconnect.",
+                "I am typing it in, please wait."
+            ],
+            "confusion": [
+                "I don't understand what is going on. I am just a normal person.",
+                "Why is this happening to me? I am so confused.",
+                "I am trying to answer, but I am very scared.",
+                "Please just tell me how to fix this, I don't know anything else.",
+                "Why is it so complicated? I thought this was simple.",
+                "Can't you just unlock it from your end? Why do I need to do this?",
+                "My nephew usually does this for me. I am lost.",
+                "I am getting a headache from this panic."
+            ],
+
             "fallback": [
-                "Okay, please tell me the next step.",
-                "I am listening. Go ahead.",
+                "Okay, understood.",
                 "What should I do next?",
-                "Okay, understood. Continue please."
+                "I am listening.",
+                "Go ahead."
             ]
         }
 
@@ -64,84 +154,96 @@ class HoneypotAgent:
             return random.choice(options)
         return options
 
+    def _detect_context(self, user_text):
+        """Scans user text for triggers to override the turn-based logic."""
+        if not user_text:
+            return None
+
+        # Check against compiled regex triggers
+        for script_key, pattern in self.triggers.items():
+            if pattern.search(user_text):
+                return script_key
+        return None
+
     def generate_reply(self, session, user_text, meta_data=None, intelligence_context=None):
         """
-        Generates the next response based on turn count.
-        Follows a tighter script to extract intelligence faster.
+        Generates response using a Hybrid approach:
+        1. Contextual Triggers (Reaction) - Priority over story to fix 'out of context' issues.
+        2. Intelligence gathering (Stall if won).
+        3. Turn-Based Story (Narrative).
+        4. Infinite Loop (Stall forever).
         """
-
-        # Check Termination
-        if session.turn_count >= self.max_turns:
-            return self._response("Okay, I have done it. Please check.", end=True, state="completed")
 
         current_turn = session.turn_count
 
         # Intelligence tracking
         has_intel = intelligence_context and (
-            intelligence_context.get('has_bank') or
-            intelligence_context.get('has_upi') or
-            intelligence_context.get('has_phone') or
-            intelligence_context.get('has_link')
+                intelligence_context.get('has_bank') or
+                intelligence_context.get('has_upi') or
+                intelligence_context.get('has_phone')
         )
 
         reply = ""
-        state = ""
+        state = "active"
 
-        # TURN-BY-TURN SCRIPT
-        # Turn 1: Immediate panic (no neutral response)
-        if current_turn == 0 or current_turn == 1:
+        # --- LOGIC LAYER 1: CONTEXTUAL OVERRIDES ---
+        # We check this FIRST to ensure we respond to questions/threats immediately.
+        context_key = self._detect_context(user_text)
+
+        if context_key:
+            # If it's the opening turns, only react if it's a Panic trigger.
+            # Otherwise, ignore context and play the "Who is this?" card.
+            if current_turn > 1 or context_key == "panic_response":
+                reply = self._get_msg(context_key)
+                state = f"reacting_{context_key}"
+                return self._response(reply, state=state)
+
+        # --- LOGIC LAYER 2: INTELLIGENCE CHECK ---
+        # If we have what we want, we just stall forever.
+        if has_intel:
+            reply = self._get_msg("stall")
+            state = "stalling_forever"
+            return self._response(reply, state=state)
+
+        # --- LOGIC LAYER 3: TURN-BASED STORY ARC ---
+        # Fallback if no specific context was triggered.
+
+        if current_turn <= 1:
             reply = self._get_msg("opening")
             state = "opening"
 
-        # Turn 2: Express fear, ask what to do
         elif current_turn == 2:
             reply = self._get_msg("probe")
             state = "probing"
 
-        # Turn 3: Start extraction early
         elif current_turn == 3:
-            if has_intel:
-                # Already got what we need, stall
-                reply = self._get_msg("stall")
-                state = "stalling"
-            else:
-                # First extraction attempt
-                reply = self._get_msg("extract")
-                state = "extraction"
+            reply = self._get_msg("extract")
+            state = "extraction"
 
-        # Turn 4: Second extraction attempt or bait
         elif current_turn == 4:
-            if has_intel:
-                reply = self._get_msg("bait")
-                state = "baiting"
-            else:
-                # Try extraction again with different wording
-                reply = self._get_msg("extract")
-                state = "extraction"
+            reply = self._get_msg("bait")
+            state = "baiting"
 
-        # Turn 5: Stall or continue baiting
         elif current_turn == 5:
-            if has_intel:
-                reply = self._get_msg("stall")
-                state = "stalling"
-            else:
-                reply = self._get_msg("bait")
-                state = "baiting"
+            reply = self._get_msg("extract")
+            state = "extraction"
 
-        # Turn 6+: Maximum stalling to keep them engaged
-        elif current_turn >= 6:
-            reply = self._get_msg("stall")
-            state = "stalling"
-
+        # --- LOGIC LAYER 4: INFINITE LOOP ---
+        # After the narrative, we cycle forever.
         else:
-            reply = self._get_msg("fallback")
-            state = "active"
+            # Randomly mix Stalling, Confusion, and Baiting.
+            # Weighted choice: mostly stall (60%), some confusion (20%), some bait (20%)
+            loop_options = ["stall", "stall", "stall", "confusion", "bait"]
+            selected_mode = random.choice(loop_options)
+            reply = self._get_msg(selected_mode)
+            state = f"infinite_loop_{selected_mode}"
 
         return self._response(reply, state=state)
 
     def _response(self, text, end=False, state="active"):
+        # Force end=False to prevent any accidental termination signal
         return {
             "reply": text,
-            "end_conversation": end,
+            "end_conversation": False,
             "agent_state": state
         }
